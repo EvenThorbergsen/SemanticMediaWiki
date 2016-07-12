@@ -1,6 +1,24 @@
 <?php
 
+use SMW\NamespaceManager;
+use SMW\ApplicationFactory;
+use SMW\Setup;
+
 /**
+ * @codeCoverageIgnore
+ *
+ * ExtensionRegistry only maps classes and functions after all extensions have
+ * been queued from the LocalSettings.php resulting in DefaultSettings not being
+ * loaded in-time.
+ *
+ * When changing the load order, please ensure that this function is run either
+ * via Composer's autoloading or as part of your internal registration.
+ */
+SemanticMediaWiki::load();
+
+/**
+ * @codeCoverageIgnore
+ *
  * This documentation group collects source code files belonging to Semantic
  * MediaWiki.
  *
@@ -10,74 +28,126 @@
  *
  * @defgroup SMW Semantic MediaWiki
  */
+class SemanticMediaWiki {
 
-if ( !defined( 'MEDIAWIKI' ) ) {
-	die( 'Not an entry point.' );
+	/**
+	 * @since 2.5
+	 *
+	 * @note It is expected that this function is loaded before LocalSettings.php
+	 * to ensure that settings and global functions are available by the time
+	 * the extension is activated.
+	 */
+	public static function load() {
+
+		if ( is_readable( __DIR__ . '/vendor/autoload.php' ) ) {
+			include_once __DIR__ . '/vendor/autoload.php';
+		}
+
+		include_once __DIR__ . '/src/Aliases.php';
+		include_once __DIR__ . '/src/Defines.php';
+		include_once __DIR__ . '/src/GlobalFunctions.php';
+
+		// If the function is called more than once then this will fail on
+		// purpose
+		foreach ( include __DIR__ . '/DefaultSettings.php' as $key => $value ) {
+			if ( !isset( $GLOBALS[$key] ) ) {
+				$GLOBALS[$key] = $value;
+			}
+		}
+	}
+
+	/**
+	 * @since 2.4
+	 */
+	public static function initExtension() {
+
+		define( 'SMW_VERSION', '3.0.0-alpha' );
+
+		if ( is_readable( __DIR__ . '/vendor/autoload.php' ) ) {
+			include_once __DIR__ . '/vendor/autoload.php';
+		}
+
+		$GLOBALS['wgExtensionMessagesFiles']['SemanticMediaWikiAlias'] = $GLOBALS['smwgIP'] . 'i18n/extra/SemanticMediaWiki.alias.php';
+		$GLOBALS['wgExtensionMessagesFiles']['SemanticMediaWikiMagic'] = $GLOBALS['smwgIP'] . 'i18n/extra/SemanticMediaWiki.magic.php';
+
+		$GLOBALS['smwgSemanticsEnabled'] = true;
+
+		self::onCanonicalNamespaces();
+	}
+
+	/**
+	 * CanonicalNamespaces initialization
+	 *
+	 * @note According to T104954 registration via wgExtensionFunctions can be
+	 * too late and should happen before that in case RequestContext::getLanguage
+	 * invokes Language::getNamespaces before the `wgExtensionFunctions` execution.
+	 *
+	 * @see https://phabricator.wikimedia.org/T104954#2391291
+	 * @see https://www.mediawiki.org/wiki/Manual:Hooks/CanonicalNamespaces
+	 * @Bug 34383
+	 *
+	 * @since 2.5
+	 */
+	public static function onCanonicalNamespaces() {
+		$GLOBALS['wgHooks']['CanonicalNamespaces'][] = 'SMW\NamespaceManager::initCanonicalNamespaces';
+	}
+
+	/**
+	 * Setup and initialization
+	 *
+	 * @note $wgExtensionFunctions variable is an array that stores
+	 * functions to be called after most of MediaWiki initialization
+	 * has finalized
+	 *
+	 * @see https://www.mediawiki.org/wiki/Manual:$wgExtensionFunctions
+	 *
+	 * @since  1.9
+	 */
+	public static function onExtensionFunction() {
+
+		// 3.x reverse the order to ensure that smwgMainCacheType is used
+		// as main and smwgCacheType being deprecated with 3.x
+		$GLOBALS['smwgMainCacheType'] = $GLOBALS['smwgCacheType'];
+
+		$applicationFactory = ApplicationFactory::getInstance();
+
+		$namespace = new NamespaceManager( $GLOBALS );
+		$namespace->init();
+
+		$setup = new Setup( $applicationFactory, $GLOBALS, __DIR__ );
+		$setup->run();
+	}
+
+	/**
+	 * @since 2.4
+	 *
+	 * @return string|null
+	 */
+	public static function getVersion() {
+		return SMW_VERSION;
+	}
+
+	/**
+	 * @since 2.4
+	 *
+	 * @return array
+	 */
+	public static function getEnvironment() {
+
+		$store = '';
+
+		if ( isset( $GLOBALS['smwgDefaultStore'] ) ) {
+			$store = $GLOBALS['smwgDefaultStore'];
+		};
+
+		if ( strpos( strtolower( $store ), 'sparql' ) ) {
+			$store .= '::' . strtolower( $GLOBALS['smwgSparqlDatabaseConnector'] );
+		}
+
+		return array(
+			'store' => $store,
+			'db'    => isset( $GLOBALS['wgDBtype'] ) ? $GLOBALS['wgDBtype'] : 'N/A'
+		);
+	}
+
 }
-
-if ( defined( 'SMW_VERSION' ) ) {
-	// Do not load SMW more than once
-	return 1;
-}
-
-if ( version_compare( $GLOBALS['wgVersion'], '1.23c', '<' ) ) {
-	die( '<b>Error:</b> This version of Semantic MediaWiki requires MediaWiki 1.23 or above.' );
-}
-
-/**
- * THIS IS A TEMPORARY HACK to get around the #1699 issue in connection with the
- * tarball release that conflicts with the Composer autoloading when invoked
- * via the LocalSettings.
- *
- * By the time `extension.json` is used, the content from load.php is to be moved
- * into this file.
- */
-require_once __DIR__ . "/load.php";
-
-/**
- * `extension.json` should only be introduced by the time:
- *
- * - A major SMW release change (e.g. 3.x) occurs
- * - `requires` section in extension.json is supported for extensions
- * - MW 1.27 to be a minimum requirement
- *
- * @note Only remove the SemanticMediaWiki.php from the `files` section in the
- * composer.json, any other `files` entry remains to ensure that initial
- * settings, aliases are loaded before `wfLoadExtension( 'SemanticMediaWiki' );`
- * is invoked.
- *
- * Furthermore, remove the `require_once` from the SemanticMediaWiki::initExtension
- * as those are loaded using Composer.
- *
- * Expected format:
- *
- * {
- *	"name": "Semantic MediaWiki",
- *	"version": "3.0.0-alpha",
- *	"author": [
- *		"..."
- *	],
- *	"url": "https://www.semantic-mediawiki.org",
- *	"descriptionmsg": "smw-desc",
- *	"license-name": "GPL-2.0+",
- *	"type": "semantic",
- *	"requires": {
- *		"MediaWiki": ">= 1.27"
- *	},
- *	"MessagesDirs": {
- *		"SemanticMediaWiki": [
- *			"i18n"
- *		]
- *	},
- *	"AutoloadClasses": {
- *		"SemanticMediaWiki": "SemanticMediaWiki.php"
- *	},
- *	"callback": "SemanticMediaWiki::initExtension",
- *	"ExtensionFunctions": [
- *		"SemanticMediaWiki::onExtensionFunction"
- *	],
- *	"load_composer_autoloader":true,
- *	"manifest_version": 1
- * }
- *
- */
