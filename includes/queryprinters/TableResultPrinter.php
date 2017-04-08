@@ -36,6 +36,15 @@ class TableResultPrinter extends ResultPrinter {
 	}
 
 	/**
+	 * @see ResultPrinter::isDeferrable
+	 *
+	 * {@inheritDoc}
+	 */
+	public function isDeferrable() {
+		return true;
+	}
+
+	/**
 	 * Returns a table
 	 *
 	 * @param SMWQueryResult $res
